@@ -12,7 +12,7 @@ const bookSeats = async (req, res) => {
     return res.status(200).json({ data: bookedSeats });
   } catch (err) {
     console.error(err.message);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Not enough seats available!" });
   }
 };
 
