@@ -11,51 +11,74 @@ const bookSeats = async (numOfSeats) => {
     throw new Error("Not enough available seats.");
   }
 
-  // Group seats by row number
-  const rowsMap = new Map();
-  availableSeats.rows.forEach((seat) => {
-    if (!rowsMap.has(seat.row_number)) {
-      rowsMap.set(seat.row_number, []);
+  const rowCount = 12; // assuming 12 rows
+
+  // Try to book all seats in the same row
+  for (let row = 1; row <= rowCount; row++) {
+    const rowSeats = availableSeats.rows.filter(seat => seat.row_number === row);
+    const availableSeatsInRow = rowSeats.filter(seat => !seat.is_reserved);
+
+    if (availableSeatsInRow.length >= numOfSeats) {
+      const seatsToBook = availableSeatsInRow.slice(0, numOfSeats);
+      for (let i = 0; i < seatsToBook.length; i++) {
+        const seat = seatsToBook[i];
+        await pool.query("UPDATE seats SET is_reserved = TRUE WHERE id = $1", [seat.id]);
+      }
+      return { status: 200, data: seatsToBook };
     }
-    rowsMap.get(seat.row_number).push(seat);
+  }
+
+  // If not enough seats in the same row, find nearby seats in different rows
+  const rowAvailability = Array.from({ length: rowCount }, (_, row) => {
+    const rowSeats = availableSeats.rows.filter(seat => seat.row_number === row + 1);
+    return rowSeats.filter(seat => !seat.is_reserved).length;
   });
 
-  let seatIdsToBook = [];
+  let minLength = Infinity;
+  let minStart = -1;
+  let minEnd = -1;
+  let start = 0;
+  let end = 0;
+  let sum = 0;
 
-  // Step 1: Try to book seats in the same row
-  for (const [row, seats] of rowsMap) {
-    if (seats.length >= numOfSeats) {
-      seatIdsToBook = seats.slice(0, numOfSeats).map((seat) => seat.id);
-      break;
+  // Find nearby rows with enough seats
+  while (end < rowAvailability.length) {
+    sum += rowAvailability[end];
+
+    while (sum >= numOfSeats) {
+      let length = end - start + 1;
+      if (length < minLength) {
+        minLength = length;
+        minStart = start;
+        minEnd = end;
+      }
+      sum -= rowAvailability[start];
+      start++;
     }
+    end++;
   }
 
-  // Step 2: If not enough seats in one row, book from nearby rows
-  if (seatIdsToBook.length === 0) {
-    for (const [row, seats] of rowsMap) {
-      if (seatIdsToBook.length >= numOfSeats) break;
-      const seatsToTake = seats.slice(0, numOfSeats - seatIdsToBook.length);
-      seatsToTake.forEach((seat) => seatIdsToBook.push(seat.id));
-    }
+  // If no nearby rows can fulfill the request
+  if (minStart === -1 || minEnd === -1) {
+    return { status: 500, message: 'Booking failed' };
   }
 
-  if (seatIdsToBook.length < numOfSeats) {
-    throw new Error("Not enough available seats.");
+  // Get the seats from nearby rows
+  let finalSeats = [];
+  for (let row = minStart + 1; row <= minEnd + 1; row++) {
+    const rowSeats = availableSeats.rows.filter(seat => seat.row_number === row);
+    finalSeats = [...finalSeats, ...rowSeats.filter(seat => !seat.is_reserved)];
   }
 
-  // Update database to mark seats as reserved
-  await pool.query(
-    "UPDATE seats SET is_reserved = TRUE WHERE id = ANY($1::int[])",
-    [seatIdsToBook]
-  );
+  finalSeats = finalSeats.slice(0, numOfSeats);
 
-  // Fetch and return the booked seats
-  const bookedSeats = await pool.query(
-    "SELECT * FROM seats WHERE id = ANY($1::int[])",
-    [seatIdsToBook]
-  );
+  // Update the seats to reserved status
+  for (let i = 0; i < finalSeats.length; i++) {
+    const seat = finalSeats[i];
+    await pool.query("UPDATE seats SET is_reserved = TRUE WHERE id = $1", [seat.id]);
+  }
 
-  return bookedSeats.rows;
+  return { status: 200, data: finalSeats };
 };
 
 // Function to get all seats
